@@ -44,10 +44,9 @@ Full design: [ARCHITECTURE.md](ARCHITECTURE.md). Measured latency: [BENCHMARKS.m
 cloud/    FastAPI fusion service: H3 res-12 clustering, ≥3-device verification,
           5-pass auto-clear, append-only coin ledger, missions, hotspots
 pc/       X Elite hop: detector strategies (QNN NPU → CPU ONNX → rule-based),
-          WebSocket ingest, offline-first local mirror, hop-visualizer dashboard
+          WebSocket ingest, offline-first local mirror
 unoq/     App Lab app: sketch/ (MCU, 100 Hz sampling + trigger) and
           python/ (MPU, gate model + Wi-Fi forwarder) — exact names required
-mobile/   OnePlus 15 driver app (React Native + MapLibre) — in progress
 models/   compiled INT8 artifacts (committed after AI Hub export)
 data/     training CSV, INT8 calibration windows, simulated fleet
 tools/    train, AI Hub export, NPU verification, benchmarks, fleet seeding,
@@ -77,11 +76,10 @@ uvicorn cloud.app:app --host 0.0.0.0 --port 8000
 python tools/simulate_fleet.py --cloud http://localhost:8000 --resolve-demo
 ```
 
-### 3. Run the X Elite hop + dashboard
+### 3. Run the X Elite hop
 
 ```bash
 ROADSENSE_CLOUD=http://localhost:8000 uvicorn pc.server:app --port 8100
-# Hop-visualizer dashboard: http://localhost:8100/
 ```
 
 On the actual Snapdragon X Elite, additionally:

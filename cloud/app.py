@@ -15,11 +15,14 @@ import sqlite3
 from contextlib import asynccontextmanager
 from typing import Any, AsyncIterator
 
+from pathlib import Path
+
 from fastapi import FastAPI, HTTPException, Request
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
-from . import db, hazards, rewards
+from . import db, hazards, rewards, routing
 
 logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s %(name)s %(levelname)s %(message)s")
@@ -33,6 +36,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 
 app = FastAPI(title="RoadSense Fusion API", version="1.0.0", lifespan=lifespan)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 @app.exception_handler(Exception)
@@ -131,3 +141,68 @@ def get_missions(user_id: str, request: Request) -> dict[str, Any]:
 def get_hotspots(request: Request, limit: int = 20) -> dict[str, Any]:
     """Ranked repair-priority list for the government dashboard."""
     return {"hotspots": hazards.hotspots(_conn(request), limit)}
+
+
+@app.get("/api/v1/route")
+def get_route(request: Request, from_lat: float, from_lng: float,
+              to_lat: float, to_lng: float) -> dict[str, Any]:
+    """Fastest vs smoothest route comparison over confirmed hazards."""
+    return routing.compare_routes(_conn(request), from_lat, from_lng,
+                                  to_lat, to_lng)
+
+
+@app.get("/api/v1/leaderboard")
+def leaderboard(request: Request, limit: int = 20) -> dict[str, Any]:
+    """Competitive rankings: top drivers by coin balance."""
+    conn = _conn(request)
+    rows = conn.execute(
+        "SELECT user_id, COALESCE(SUM(amount), 0) AS balance "
+        "FROM ledger GROUP BY user_id ORDER BY balance DESC LIMIT ?",
+        (limit,),
+    ).fetchall()
+    out = []
+    for rank, r in enumerate(rows, 1):
+        # Enrich with activity counts.
+        cells = conn.execute(
+            "SELECT COUNT(DISTINCT cell) AS n FROM events e "
+            "JOIN devices d ON e.device_id = d.device_id WHERE d.user_id = ?",
+            (r["user_id"],),
+        ).fetchone()["n"]
+        hazards = conn.execute(
+            "SELECT COUNT(DISTINCT hr.hazard_id) AS n FROM hazard_reports hr "
+            "WHERE hr.user_id = ?",
+            (r["user_id"],),
+        ).fetchone()["n"]
+        out.append({"rank": rank, "user_id": r["user_id"],
+                    "balance": int(r["balance"]),
+                    "cells_mapped": cells, "hazards_reported": hazards})
+    return {"leaderboard": out}
+
+
+@app.get("/api/v1/stats")
+def platform_stats(request: Request) -> dict[str, Any]:
+    """Platform-wide statistics for the authority/overview dashboard."""
+    conn = _conn(request)
+    total_events = conn.execute("SELECT COUNT(*) AS n FROM events").fetchone()["n"]
+    total_devices = conn.execute("SELECT COUNT(*) AS n FROM devices").fetchone()["n"]
+    total_cells = conn.execute("SELECT COUNT(*) AS n FROM cells").fetchone()["n"]
+    hz = conn.execute(
+        "SELECT status, COUNT(*) AS n FROM hazards GROUP BY status"
+    ).fetchall()
+    hz_map = {r["status"]: r["n"] for r in hz}
+    total_coins = conn.execute(
+        "SELECT COALESCE(SUM(amount), 0) AS n FROM ledger"
+    ).fetchone()["n"]
+    return {"stats": {
+        "total_events": total_events,
+        "total_hazards": sum(hz_map.values()),
+        "confirmed_hazards": hz_map.get("CONFIRMED", 0),
+        "resolved_hazards": hz_map.get("RESOLVED", 0),
+        "pending_hazards": hz_map.get("PENDING", 0),
+        "total_devices": total_devices,
+        "total_cells_mapped": total_cells,
+        "total_coins_awarded": int(total_coins),
+    }}
+
+
+
