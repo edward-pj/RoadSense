@@ -1,0 +1,9 @@
+name: roadsense
+description: >
+  RoadSense edge node — MCU samples IMU at 100 Hz and triggers on peaks;
+  MPU runs the INT8 gate model on the Hexagon DSP and forwards real road
+  events to the X Elite over Wi-Fi WebSocket.
+python:
+  entrypoint: python/main.py
+sketch:
+  path: sketch/

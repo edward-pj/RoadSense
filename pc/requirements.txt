@@ -1,0 +1,9 @@
+fastapi>=0.111
+uvicorn[standard]>=0.30
+httpx>=0.27
+numpy>=1.26
+h3>=4.0
+# On the Snapdragon X Elite install the QNN build (native ARM64 Python):
+#   pip install onnxruntime-qnn
+# Elsewhere (dev machines) plain onnxruntime is fine; detector falls back:
+onnxruntime>=1.18; platform_machine != "ARM64"

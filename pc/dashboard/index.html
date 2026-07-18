@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>RoadSense — 5-Hop Pipeline</title>
+<style>
+  :root { --bg:#0d1117; --card:#161b22; --line:#30363d; --fg:#e6edf3;
+          --dim:#8b949e; --ok:#3fb950; --warn:#d29922; --bad:#f85149; --accent:#58a6ff; }
+  * { box-sizing:border-box; margin:0; }
+  body { background:var(--bg); color:var(--fg);
+         font:14px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace; padding:24px; }
+  h1 { font-size:20px; margin-bottom:4px; }
+  .sub { color:var(--dim); margin-bottom:20px; }
+  .hops { display:flex; gap:10px; align-items:stretch; margin-bottom:20px; flex-wrap:wrap; }
+  .hop { flex:1; min-width:150px; background:var(--card); border:1px solid var(--line);
+         border-radius:8px; padding:12px; transition:box-shadow .15s, border-color .15s; }
+  .hop.fire { border-color:var(--ok); box-shadow:0 0 14px rgba(63,185,80,.55); }
+  .hop.offline { border-color:var(--bad); box-shadow:0 0 14px rgba(248,81,73,.5); }
+  .hop .n { color:var(--accent); font-size:11px; }
+  .hop .name { font-weight:700; margin:2px 0; }
+  .hop .chip { color:var(--dim); font-size:11px; }
+  .hop .status { margin-top:8px; font-size:12px; min-height:34px; color:var(--ok); }
+  .hop.offline .status { color:var(--bad); }
+  .arrow { align-self:center; color:var(--dim); }
+  .row { display:flex; gap:16px; flex-wrap:wrap; }
+  .panel { background:var(--card); border:1px solid var(--line); border-radius:8px;
+           padding:14px; flex:1; min-width:320px; }
+  .panel h2 { font-size:13px; color:var(--dim); text-transform:uppercase;
+              letter-spacing:.08em; margin-bottom:10px; }
+  canvas { width:100%; height:120px; background:#0a0d12; border-radius:4px; }
+  #log { max-height:260px; overflow-y:auto; font-size:12px; }
+  #log div { padding:3px 0; border-bottom:1px solid var(--line); }
+  .cls-pothole { color:var(--bad); } .cls-speed_breaker { color:var(--warn); }
+  .cls-rough_patch { color:var(--accent); } .cls-smooth { color:var(--ok); }
+  .stat { display:flex; justify-content:space-between; padding:3px 0; }
+  .stat b { color:var(--accent); }
+</style>
+</head>
+<body>
+<h1>RoadSense — live 5-hop orchestration</h1>
+<div class="sub">MCU → DSP gate → NPU classifier → cloud fusion → driver phone</div>
+
+<div class="hops" id="hops">
+  <div class="hop" id="hop1"><div class="n">HOP 1</div><div class="name">UNO Q · MCU</div>
+    <div class="chip">STM32U585 · Zephyr · 100 Hz</div><div class="status" id="s1">waiting…</div></div>
+  <div class="arrow">→</div>
+  <div class="hop" id="hop2"><div class="n">HOP 2</div><div class="name">UNO Q · MPU</div>
+    <div class="chip">Hexagon DSP v66 · INT8 gate</div><div class="status" id="s2">waiting…</div></div>
+  <div class="arrow">→</div>
+  <div class="hop" id="hop3"><div class="n">HOP 3</div><div class="name">X Elite</div>
+    <div class="chip">Hexagon NPU v73 · classifier</div><div class="status" id="s3">waiting…</div></div>
+  <div class="arrow">→</div>
+  <div class="hop" id="hop4"><div class="n">HOP 4</div><div class="name">Cloud</div>
+    <div class="chip">H3 fusion · verify · rewards</div><div class="status" id="s4">waiting…</div></div>
+  <div class="arrow">→</div>
+  <div class="hop" id="hop5"><div class="n">HOP 5</div><div class="name">OnePlus 15</div>
+    <div class="chip">NPU v81 · driver map</div><div class="status" id="s5">waiting…</div></div>
+</div>
+
+<div class="row">
+  <div class="panel"><h2>Vertical accel (last window)</h2><canvas id="wave" width="640" height="120"></canvas></div>
+  <div class="panel"><h2>Pipeline stats</h2>
+    <div class="stat"><span>Inference backend</span><b id="backend">—</b></div>
+    <div class="stat"><span>Last inference</span><b id="infer">—</b></div>
+    <div class="stat"><span>Glass-to-glass</span><b id="glass">—</b></div>
+    <div class="stat"><span>Events this session</span><b id="count">0</b></div>
+  </div>
+</div>
+<div class="row" style="margin-top:16px">
+  <div class="panel"><h2>Event log</h2><div id="log"></div></div>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+let count = 0;
+
+function fire(hop, label, offline=false) {
+  const el = $("hop"+hop), st = $("s"+hop);
+  st.textContent = label;
+  el.classList.remove("fire","offline");
+  void el.offsetWidth;                       // restart the CSS transition
+  el.classList.add(offline ? "offline" : "fire");
+  setTimeout(() => el.classList.remove("fire"), 900);
+}
+
+function drawWave(samples) {
+  const c = $("wave"), ctx = c.getContext("2d");
+  ctx.clearRect(0,0,c.width,c.height);
+  ctx.strokeStyle = "#58a6ff"; ctx.lineWidth = 1.5; ctx.beginPath();
+  const mid = c.height/2, scale = c.height/4;
+  samples.forEach((s,i) => {
+    const x = i/(samples.length-1)*c.width, y = mid - (s-1.0)*scale;
+    i ? ctx.lineTo(x,y) : ctx.moveTo(x,y);
+  });
+  ctx.stroke();
+  ctx.strokeStyle = "#30363d"; ctx.beginPath();
+  ctx.moveTo(0,mid); ctx.lineTo(c.width,mid); ctx.stroke();
+}
+
+function connect() {
+  const ws = new WebSocket(`ws://${location.host}/ws/dashboard`);
+  ws.onmessage = e => {
+    const m = JSON.parse(e.data);
+    if (m.kind === "hop") {
+      fire(m.hop, m.label, !!m.offline);
+      if (m.hop === 2) fire(1, "trigger → window sent");
+      if (m.infer_ms !== undefined) $("infer").textContent = m.infer_ms + " ms";
+      if (m.backend) $("backend").textContent = m.backend;
+      if (m.waveform) drawWave(m.waveform);
+    }
+    if (m.kind === "event") {
+      count++; $("count").textContent = count;
+      $("glass").textContent = m.glass_ms + " ms";
+      fire(5, m.road_class + " pinned on map");
+      const d = document.createElement("div");
+      d.innerHTML = `<span class="cls-${m.road_class}">${m.road_class}</span>` +
+        ` sev ${m.severity} · ${m.device_id} · ${m.lat.toFixed(5)},${m.lng.toFixed(5)}` +
+        ` · ${m.backend} · ${m.glass_ms} ms`;
+      $("log").prepend(d);
+    }
+  };
+  ws.onclose = () => setTimeout(connect, 1500);
+  setInterval(() => ws.readyState === 1 && ws.send("ping"), 10000);
+}
+connect();
+</script>
+</body>
+</html>

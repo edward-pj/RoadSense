@@ -1,0 +1,5 @@
+name: roadsense-mcu
+description: 100 Hz IMU sampling, ring buffer, peak trigger, Bridge window submit
+fqbn: arduino:zephyr:unoq
+libraries:
+  - Modulino
