@@ -22,7 +22,7 @@ from pathlib import Path
 
 import numpy as np
 
-WINDOW, CHANNELS, N_CLASSES = 128, 6, 4
+WINDOW, CHANNELS, N_CLASSES = 16, 6, 4
 
 
 def build_models():
@@ -33,8 +33,8 @@ def build_models():
         def __init__(self) -> None:
             super().__init__()
             self.net = nn.Sequential(
-                nn.Conv1d(CHANNELS, 8, 7, stride=4), nn.BatchNorm1d(8), nn.ReLU(),
-                nn.Conv1d(8, 16, 5, stride=4), nn.BatchNorm1d(16), nn.ReLU(),
+                nn.Conv1d(CHANNELS, 8, 3, stride=2, padding=1), nn.BatchNorm1d(8), nn.ReLU(),
+                nn.Conv1d(8, 16, 3, stride=2, padding=1), nn.BatchNorm1d(16), nn.ReLU(),
                 nn.AdaptiveAvgPool1d(1), nn.Flatten(),
                 nn.Linear(16, 1), nn.Sigmoid(),
             )
@@ -46,9 +46,9 @@ def build_models():
         def __init__(self) -> None:
             super().__init__()
             self.backbone = nn.Sequential(
-                nn.Conv1d(CHANNELS, 16, 7, stride=2), nn.BatchNorm1d(16), nn.ReLU(),
-                nn.Conv1d(16, 32, 5, stride=2), nn.BatchNorm1d(32), nn.ReLU(),
-                nn.Conv1d(32, 64, 3, stride=2), nn.BatchNorm1d(64), nn.ReLU(),
+                nn.Conv1d(CHANNELS, 16, 3, stride=2, padding=1), nn.BatchNorm1d(16), nn.ReLU(),
+                nn.Conv1d(16, 32, 3, stride=2, padding=1), nn.BatchNorm1d(32), nn.ReLU(),
+                nn.Conv1d(32, 64, 3, stride=2, padding=1), nn.BatchNorm1d(64), nn.ReLU(),
                 nn.AdaptiveAvgPool1d(1), nn.Flatten(),
                 nn.Linear(64, 32), nn.ReLU(),
             )
@@ -72,10 +72,10 @@ def synthetic_dataset(n: int = 2000, seed: int = 7) -> tuple[np.ndarray, np.ndar
     t = np.arange(WINDOW)
     for i, label in enumerate(y):
         if label == 1:      # pothole: sharp dip then rebound at centre
-            X[i, 60:68, 2] -= 0.8 * np.hanning(8)
-            X[i, 66:74, 2] += 0.5 * np.hanning(8)
+            X[i, 6:10, 2] -= 0.8 * np.hanning(4)
+            X[i, 8:12, 2] += 0.5 * np.hanning(4)
         elif label == 2:    # speed breaker: slow symmetric hump
-            X[i, :, 2] += 0.45 * np.exp(-((t - 64) ** 2) / 300)
+            X[i, :, 2] += 0.45 * np.exp(-((t - 8) ** 2) / 5)
         elif label == 3:    # rough patch: sustained wideband vibration
             X[i, :, 2] += rng.normal(0, 0.18, WINDOW)
     return X, y.astype(np.int64)
@@ -140,4 +140,10 @@ if __name__ == "__main__":
     ap.add_argument("--epochs", type=int, default=15)
     args = ap.parse_args()
     X, y = synthetic_dataset() if args.synthetic or not args.data else load_csv(args.data)
+    if args.synthetic or not args.data:
+        csv_out = Path("data/synthetic_roadsense.csv")
+        csv_out.parent.mkdir(parents=True, exist_ok=True)
+        out_data = np.column_stack((y, X.reshape(X.shape[0], -1)))
+        np.savetxt(csv_out, out_data, delimiter=",", fmt="%g", header="label," + ",".join(f"f{i}" for i in range(X.shape[1]*X.shape[2])), comments="")
+        print(f"Exported full synthetic dataset to {csv_out}")
     train_and_export(X, y, args.out, args.epochs)
