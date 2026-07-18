@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>RoadSense // Telemetry Dashboard</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;800&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div class="glow-bg"></div>
+    
+    <header>
+        <div class="logo">
+            <span class="brand">ROADSENSE</span>
+            <span class="separator">//</span>
+            <span class="subtitle">Edge-First Telemetry</span>
+        </div>
+        <div class="system-status">
+            <div class="status-indicator online" id="connectionStatusIndicator"></div>
+            <span id="connectionStatusText">CONNECTING TO PIPELINE...</span>
+        </div>
+    </header>
+
+    <main class="dashboard-grid">
+        <!-- Left: Pipeline Hops Visualizer -->
+        <section class="card pipeline-card">
+            <h2>5-Hop Pipeline Flow</h2>
+            <div class="pipeline">
+                <!-- Hop 1 -->
+                <div class="hop-node" id="hop1">
+                    <div class="hop-icon">1</div>
+                    <div class="hop-info">
+                        <h3>UNO Q MCU (STM32U585)</h3>
+                        <p class="hop-desc">IMU @ 100 Hz / Ring Buffer</p>
+                        <span class="badge" id="hop1-status">Awaiting Trigger</span>
+                    </div>
+                </div>
+                <div class="hop-connector" id="connector-1-2"></div>
+
+                <!-- Hop 2 -->
+                <div class="hop-node" id="hop2">
+                    <div class="hop-icon">2</div>
+                    <div class="hop-info">
+                        <h3>UNO Q MPU (QRB2210)</h3>
+                        <p class="hop-desc">INT8 Gate Model (Hexagon DSP v66)</p>
+                        <span class="badge" id="hop2-status">Listening...</span>
+                    </div>
+                </div>
+                <div class="hop-connector" id="connector-2-3"></div>
+
+                <!-- Hop 3 -->
+                <div class="hop-node active" id="hop3">
+                    <div class="hop-icon">3</div>
+                    <div class="hop-info">
+                        <h3>X Elite PC (Inference)</h3>
+                        <p class="hop-desc">ONNX Classifier (Hexagon NPU v73)</p>
+                        <span class="badge" id="hop3-status">Online (CPU/NPU)</span>
+                    </div>
+                </div>
+                <div class="hop-connector" id="connector-3-4"></div>
+
+                <!-- Hop 4 -->
+                <div class="hop-node" id="hop4">
+                    <div class="hop-icon">4</div>
+                    <div class="hop-info">
+                        <h3>Cloud Fusion (FastAPI)</h3>
+                        <p class="hop-desc">H3 Res-12 Cell / 3-Device Verification</p>
+                        <span class="badge" id="hop4-status">Idle</span>
+                    </div>
+                </div>
+                <div class="hop-connector" id="connector-4-5"></div>
+
+                <!-- Hop 5 -->
+                <div class="hop-node" id="hop5">
+                    <div class="hop-icon">5</div>
+                    <div class="hop-info">
+                        <h3>OnePlus 15 (Driver App)</h3>
+                        <p class="hop-desc">Live Map Navigation & TTS Alerts</p>
+                        <span class="badge" id="hop5-status">Offline</span>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Right: Waveform and Ingested Events -->
+        <div class="right-column">
+            <!-- Waveform Card -->
+            <section class="card waveform-card">
+                <div class="card-header">
+                    <h2>Live IMU Waveform (Z-Axis Accel)</h2>
+                    <span class="meta-label" id="backendLabel">Backend: -</span>
+                </div>
+                <div class="canvas-container">
+                    <canvas id="waveformCanvas"></canvas>
+                </div>
+            </section>
+
+            <!-- Events List Card -->
+            <section class="card events-card">
+                <h2>Real-Time Classified Events</h2>
+                <div class="table-container">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Time</th>
+                                <th>Class</th>
+                                <th>Severity</th>
+                                <th>Device</th>
+                                <th>Coordinates</th>
+                                <th>Latency</th>
+                            </tr>
+                        </thead>
+                        <tbody id="eventsList">
+                            <tr class="empty-row">
+                                <td colspan="6">Awaiting telemetry data stream...</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </section>
+        </div>
+    </main>
+
+    <script src="app.js"></script>
+</body>
+</html>

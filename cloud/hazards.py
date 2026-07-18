@@ -171,10 +171,11 @@ def vote(conn: sqlite3.Connection, hazard_id: int, user_id: str, choice: str) ->
 
 
 def list_hazards(conn: sqlite3.Connection, statuses: tuple[str, ...] = ("PENDING", "CONFIRMED")) -> list[dict[str, Any]]:
-    """Hazards with derived lat/lng and mean severity, for map rendering."""
+    """Hazards with derived lat/lng, mean severity, and last-report time."""
     out = []
     for hz in conn.execute(
-        f"SELECT * FROM hazards WHERE status IN ({','.join('?' * len(statuses))})",
+        "SELECT *, (SELECT MAX(ts) FROM hazard_reports WHERE hazard_id = hazards.id) "
+        f"AS last_ts FROM hazards WHERE status IN ({','.join('?' * len(statuses))})",
         statuses,
     ).fetchall():
         lat, lng = h3.cell_to_latlng(hz["cell"])
@@ -183,8 +184,32 @@ def list_hazards(conn: sqlite3.Connection, statuses: tuple[str, ...] = ("PENDING
             "road_class": hz["road_class"], "status": hz["status"],
             "severity": round(hz["severity_sum"] / max(hz["report_count"], 1), 1),
             "reports": hz["report_count"],
+            "last_seen": _iso(hz["last_ts"]) if hz["last_ts"] else None,
         })
     return out
+
+
+def _iso(ts: float) -> str:
+    """Unix seconds -> UTC ISO-8601 (Z), for JSON timestamps."""
+    from datetime import datetime, timezone
+    return datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _report_trend(conn: sqlite3.Connection, hazard_id: int, now: float, days: int = 7) -> list[int]:
+    """Report counts per day over the last `days`, oldest -> newest.
+
+    Real signal for the dashboard sparkline: how report volume on a hazard has
+    moved this week (a rising trend = worsening, falling = self-clearing).
+    """
+    start = now - days * 86400
+    buckets = [0] * days
+    for row in conn.execute(
+        "SELECT ts FROM hazard_reports WHERE hazard_id = ? AND ts >= ?",
+        (hazard_id, start),
+    ).fetchall():
+        idx = min(days - 1, max(0, int((row["ts"] - start) // 86400)))
+        buckets[idx] += 1
+    return buckets
 
 
 def hotspots(conn: sqlite3.Connection, limit: int = 20) -> list[dict[str, Any]]:
@@ -206,6 +231,7 @@ def hotspots(conn: sqlite3.Connection, limit: int = 20) -> list[dict[str, Any]]:
             "road_class": hz["road_class"],
             "severity": round(mean_sev, 1), "reports": hz["report_count"],
             "priority": round(priority, 2),
+            "trend": _report_trend(conn, hz["id"], now),
         })
     out.sort(key=lambda h: h["priority"], reverse=True)
     return out[:limit]

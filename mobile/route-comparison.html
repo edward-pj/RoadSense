@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>RoadSense // Route Comparison</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" rel="stylesheet">
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<style>
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%}
+  body{background:#eef0f4;font-family:Inter,system-ui,sans-serif;color:#111827;
+    display:flex;align-items:center;justify-content:center;min-height:100vh;-webkit-font-smoothing:antialiased}
+  #rs-frame{width:390px;height:844px;position:relative;overflow:hidden;background:#F4F5F7;
+    border-radius:26px;box-shadow:0 24px 60px -18px rgba(17,24,39,.55)}
+  #rs-screen{position:absolute;inset:0}
+  .leaflet-container{background:#e6e8ec!important;font-family:Inter,system-ui,sans-serif}
+  .leaflet-control-attribution{font-size:9px;background:rgba(255,255,255,.7)!important;color:#98a1ad!important}
+  .leaflet-control-attribution a{color:#7c8694!important}
+  .leaflet-control-zoom{display:none!important}
+  .rs-route{transition:stroke .35s,stroke-width .3s,stroke-opacity .35s}
+  @keyframes rs-shim{0%{background-position:-260px 0}100%{background-position:260px 0}}
+  @keyframes rs-slidedown{from{transform:translateY(-120%);opacity:0}to{transform:translateY(0);opacity:1}}
+  @keyframes rs-fade{from{opacity:.4}to{opacity:1}}
+  @media (max-width:430px){body{background:#F4F5F7}#rs-frame{width:100vw;height:100vh;border-radius:0;box-shadow:none}}
+</style>
+</head>
+<body>
+  <div id="rs-frame"><div id="rs-screen"></div></div>
+  <script src="rs-api.js"></script>
+  <script src="rs-screens.js"></script>
+  <script>
+    // Demo options via query string: ?selected=fast ?offline=1 ?state=loading|error
+    const p = new URLSearchParams(location.search);
+    const rc = new RouteComparisonScreen(document.getElementById('rs-screen'), {
+      initialSelected: p.get('selected') === 'fast' ? 'fast' : 'smooth',
+      startOffline: p.get('offline') === '1',
+      demoState: p.get('state') || 'normal',
+    });
+    rc.mount();
+  </script>
+</body>
+</html>
