@@ -23,7 +23,7 @@ from typing import Any, AsyncIterator
 import httpx
 import numpy as np
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse
+from fastapi.middleware.cors import CORSMiddleware
 
 from cloud import db as clouddb
 from cloud import hazards as local_fusion
@@ -35,7 +35,6 @@ log = logging.getLogger("roadsense.pc")
 
 CLOUD_URL = os.environ.get("ROADSENSE_CLOUD", "http://localhost:8000")
 MIRROR_DB = os.environ.get("ROADSENSE_MIRROR_DB", "pc_mirror.db")
-DASHBOARD = Path(__file__).resolve().parent / "dashboard" / "index.html"
 
 VEHICLE_FACTORS = {"2wheeler": 0.7, "hatchback": 1.0, "suv": 1.3}
 
@@ -79,10 +78,15 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 app = FastAPI(title="RoadSense PC Hop", version="1.0.0", lifespan=lifespan)
 
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
-@app.get("/")
-def dashboard() -> FileResponse:
-    return FileResponse(DASHBOARD)
+
+
 
 
 @app.get("/health")
@@ -183,3 +187,100 @@ def local_hazards() -> dict[str, Any]:
     """Local-mirror hazards — what the phone reads when the cloud is dead."""
     return {"hazards": local_fusion.list_hazards(app.state.mirror),
             "source": "local_mirror"}
+
+
+@app.get("/api/v1/rewards/{user_id}")
+async def proxy_rewards(user_id: str) -> dict[str, Any]:
+    """Proxy rewards from cloud; fall back to local ledger."""
+    try:
+        r = await app.state.http.get(f"{CLOUD_URL}/api/v1/rewards/{user_id}")
+        r.raise_for_status()
+        return r.json()
+    except Exception:
+        from cloud import rewards
+        return {"user_id": user_id,
+                "balance": rewards.balance(app.state.mirror, user_id),
+                "history": rewards.history(app.state.mirror, user_id)}
+
+
+@app.get("/api/v1/missions/{user_id}")
+async def proxy_missions(user_id: str) -> dict[str, Any]:
+    """Proxy missions from cloud; fall back to local."""
+    try:
+        r = await app.state.http.get(f"{CLOUD_URL}/api/v1/missions/{user_id}")
+        r.raise_for_status()
+        return r.json()
+    except Exception:
+        from cloud import rewards
+        return {"user_id": user_id,
+                "missions": rewards.mission_status(app.state.mirror, user_id)}
+
+
+@app.get("/api/v1/authority/hotspots")
+async def proxy_hotspots(limit: int = 20) -> dict[str, Any]:
+    """Proxy hotspots from cloud; fall back to local mirror."""
+    try:
+        r = await app.state.http.get(f"{CLOUD_URL}/api/v1/authority/hotspots",
+                                     params={"limit": limit})
+        r.raise_for_status()
+        return r.json()
+    except Exception:
+        return {"hotspots": local_fusion.hotspots(app.state.mirror, limit)}
+
+
+@app.get("/api/v1/route")
+async def proxy_route(from_lat: float, from_lng: float,
+                      to_lat: float, to_lng: float) -> dict[str, Any]:
+    """Proxy route from cloud; fall back to local routing."""
+    try:
+        r = await app.state.http.get(f"{CLOUD_URL}/api/v1/route",
+                                     params={"from_lat": from_lat, "from_lng": from_lng,
+                                             "to_lat": to_lat, "to_lng": to_lng})
+        r.raise_for_status()
+        return r.json()
+    except Exception:
+        from cloud import routing
+        return routing.compare_routes(app.state.mirror, from_lat, from_lng,
+                                      to_lat, to_lng)
+
+
+@app.post("/api/v1/hazards/{hazard_id}/vote")
+async def proxy_vote(hazard_id: int, request: dict[str, Any]) -> dict[str, Any]:
+    """Proxy vote to cloud; fall back to local."""
+    try:
+        r = await app.state.http.post(
+            f"{CLOUD_URL}/api/v1/hazards/{hazard_id}/vote", json=request)
+        r.raise_for_status()
+        return r.json()
+    except Exception:
+        with app.state.mirror:
+            counts = local_fusion.vote(
+                app.state.mirror, hazard_id,
+                request.get("user_id", "anon"), request.get("vote", "confirm"))
+        return {"hazard_id": hazard_id, "votes": counts}
+
+
+@app.get("/api/v1/leaderboard")
+async def proxy_leaderboard(limit: int = 20) -> dict[str, Any]:
+    """Proxy leaderboard from cloud."""
+    try:
+        r = await app.state.http.get(f"{CLOUD_URL}/api/v1/leaderboard",
+                                     params={"limit": limit})
+        r.raise_for_status()
+        return r.json()
+    except Exception:
+        return {"leaderboard": []}
+
+
+@app.get("/api/v1/stats")
+async def proxy_stats() -> dict[str, Any]:
+    """Proxy stats from cloud."""
+    try:
+        r = await app.state.http.get(f"{CLOUD_URL}/api/v1/stats")
+        r.raise_for_status()
+        return r.json()
+    except Exception:
+        return {"stats": {}}
+
+
+
