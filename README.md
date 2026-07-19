@@ -129,7 +129,7 @@ Drivers aren't just users — they're contributors. Every drive automatically ea
 Rewards are backed by an **append-only ledger** with idempotency keys — offline sync replays can never double-pay. Balances are derived, never mutated.
 
 <p align="center">
-  <img src="assets/images/driver_rewards.png" alt="RoadSense Rewards — Earn coins for every drive" width="80%">
+  <img src="assets/images/Screenshot 2026-07-19 at 11.49.44 AM.png" alt="RoadSense Rewards — Earn coins for every drive" width="80%">
 </p>
 
 ### Fastest vs Smoothest Navigation
@@ -145,7 +145,7 @@ Enter a start and destination. RoadSense compares two routes:
 > The smoothest path may not always be the shortest. It avoids confirmed potholes, rough patches, and high-severity hazards — giving you a choice between speed and comfort.
 
 <p align="center">
-  <img src="assets/images/navigation.png" alt="Fastest vs Smoothest route comparison" width="80%">
+  <img src="assets/images/Screenshot 2026-07-19 at 11.23.39 AM.png" alt="Fastest vs Smoothest route comparison" width="80%">
 </p>
 
 ---
@@ -164,7 +164,7 @@ Road hazards are grouped using **H3 hexagonal spatial indexing** at resolution 1
 - The grid self-maintains — 5 consecutive clean passes auto-resolve a hazard
 
 <p align="center">
-  <img src="assets/images/h3_dashboard.png" alt="H3 Hexagonal road intelligence dashboard" width="90%">
+  <img src="assets/images/WhatsApp Image 2026-07-19 at 11.51.41.jpeg" alt="H3 Hexagonal road intelligence dashboard" width="90%">
 </p>
 
 ### Road Condition Details
