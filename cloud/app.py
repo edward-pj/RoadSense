@@ -17,12 +17,18 @@ from typing import Any, AsyncIterator
 
 from pathlib import Path
 
+from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import db, hazards, rewards, routing
+from . import contrib, db, hazards, rewards, routing, sarvam
+
+# Load SARVAM_API_KEY (and any other secrets) from the repo-root .env. Kept
+# server-side only — the static mobile page reaches Sarvam via the proxy below.
+load_dotenv()
 
 logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s %(name)s %(levelname)s %(message)s")
@@ -83,6 +89,17 @@ class VoteIn(BaseModel):
     vote: str = Field(pattern="^(confirm|deny)$")
 
 
+class TTSIn(BaseModel):
+    text: str
+    lang: str = "en"
+
+
+class TranslateIn(BaseModel):
+    text: str
+    source: str = "en"
+    target: str = "hi"
+
+
 @app.get("/health")
 def health() -> dict[str, str]:
     return {"status": "ok"}
@@ -135,6 +152,12 @@ def get_rewards(user_id: str, request: Request) -> dict[str, Any]:
 def get_missions(user_id: str, request: Request) -> dict[str, Any]:
     return {"user_id": user_id,
             "missions": rewards.mission_status(_conn(request), user_id)}
+
+
+@app.get("/api/v1/contrib/{user_id}")
+def get_contrib(user_id: str, request: Request) -> dict[str, Any]:
+    """Composed per-user impact rollup for the driver 'Your impact' screen."""
+    return contrib.contribution(_conn(request), user_id)
 
 
 @app.get("/api/v1/authority/hotspots")
@@ -203,6 +226,44 @@ def platform_stats(request: Request) -> dict[str, Any]:
         "total_cells_mapped": total_cells,
         "total_coins_awarded": int(total_coins),
     }}
+
+
+def _sarvam_error(exc: sarvam.SarvamError) -> JSONResponse:
+    """Consistent error envelope for a failed Sarvam call (502)."""
+    return JSONResponse(status_code=502,
+                        content={"error": {"code": "sarvam_unavailable",
+                                           "message": str(exc)}})
+
+
+@app.post("/api/v1/tts")
+async def text_to_speech(body: TTSIn) -> Response:
+    """Sarvam TTS proxy — return WAV audio for a short driver-alert line.
+
+    The API key stays server-side; the static mobile page calls this so the
+    navigation voice alert can speak in the driver's chosen language. On any
+    Sarvam failure the client falls back to on-device speechSynthesis.
+    """
+    try:
+        wav = await sarvam.tts(body.text, body.lang)
+    except sarvam.SarvamError as exc:
+        return _sarvam_error(exc)
+    return Response(content=wav, media_type="audio/wav")
+
+
+@app.post("/api/v1/translate")
+async def translate_text(body: TranslateIn) -> Response:
+    """Sarvam Translate proxy (live translation for the deferred second spot).
+
+    UI strings ship pre-translated, so the app does not need this at runtime.
+    """
+    try:
+        out = await sarvam.translate(body.text, body.source, body.target)
+    except sarvam.SarvamError as exc:
+        return _sarvam_error(exc)
+    return JSONResponse(content={"translated_text": out})
+
+
+app.mount("/", StaticFiles(directory="cloud/dashboard", html=True), name="dashboard")
 
 
 

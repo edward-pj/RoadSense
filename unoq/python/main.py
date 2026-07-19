@@ -25,6 +25,9 @@ logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s %(name)s %(levelname)s %(message)s")
 log = logging.getLogger("roadsense.unoq")
 
+from dotenv import load_dotenv
+load_dotenv()
+
 PC_WS_URL = os.environ.get("ROADSENSE_PC_WS", "ws://192.168.1.10:8100/ws/ingest")
 DEVICE_ID = os.environ.get("ROADSENSE_DEVICE_ID", "unoq-01")
 USER_ID = os.environ.get("ROADSENSE_USER_ID", "driver-01")

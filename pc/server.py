@@ -22,16 +22,22 @@ from typing import Any, AsyncIterator
 
 import httpx
 import numpy as np
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse, Response
+from fastapi.staticfiles import StaticFiles
 
 from cloud import db as clouddb
 from cloud import hazards as local_fusion
+from cloud import sarvam
 from . import detector as detector_mod
 
 logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s %(name)s %(levelname)s %(message)s")
 log = logging.getLogger("roadsense.pc")
+
+from dotenv import load_dotenv
+load_dotenv()
 
 CLOUD_URL = os.environ.get("ROADSENSE_CLOUD", "http://localhost:8000")
 MIRROR_DB = os.environ.get("ROADSENSE_MIRROR_DB", "pc_mirror.db")
@@ -216,6 +222,18 @@ async def proxy_missions(user_id: str) -> dict[str, Any]:
                 "missions": rewards.mission_status(app.state.mirror, user_id)}
 
 
+@app.get("/api/v1/contrib/{user_id}")
+async def proxy_contrib(user_id: str) -> dict[str, Any]:
+    """Proxy the impact rollup from cloud; fall back to the local mirror."""
+    try:
+        r = await app.state.http.get(f"{CLOUD_URL}/api/v1/contrib/{user_id}")
+        r.raise_for_status()
+        return r.json()
+    except Exception:
+        from cloud import contrib
+        return contrib.contribution(app.state.mirror, user_id)
+
+
 @app.get("/api/v1/authority/hotspots")
 async def proxy_hotspots(limit: int = 20) -> dict[str, Any]:
     """Proxy hotspots from cloud; fall back to local mirror."""
@@ -281,6 +299,27 @@ async def proxy_stats() -> dict[str, Any]:
         return r.json()
     except Exception:
         return {"stats": {}}
+
+
+@app.post("/api/v1/tts")
+async def edge_tts(request: Request) -> Response:
+    """Sarvam TTS at the edge — the mobile app is served from this PC hop, so
+    the navigation voice alert works even when pointed only at the mirror. The
+    key is read from the same .env; the client falls back to on-device speech
+    if this fails.
+    """
+    body = await request.json()
+    try:
+        wav = await sarvam.tts(body.get("text", ""), body.get("lang", "en"))
+    except sarvam.SarvamError as exc:
+        return JSONResponse(status_code=502,
+                            content={"error": {"code": "sarvam_unavailable",
+                                               "message": str(exc)}})
+    return Response(content=wav, media_type="audio/wav")
+
+
+app.mount("/mobile", StaticFiles(directory="mobile", html=True), name="mobile")
+app.mount("/", StaticFiles(directory="pc/dashboard", html=True), name="dashboard")
 
 
 

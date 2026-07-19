@@ -1,0 +1,181 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>RoadSense // Driver</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" rel="stylesheet">
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<style>
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%}
+  body{
+    background:#eef0f4;font-family:Inter,system-ui,sans-serif;color:#111827;
+    display:flex;align-items:center;justify-content:center;
+    min-height:100vh;min-height:100dvh;
+    -webkit-font-smoothing:antialiased;
+  }
+  #rs-frame{
+    width:390px;height:844px;position:relative;overflow:hidden;background:#F4F5F7;
+    border-radius:26px;box-shadow:0 24px 60px -18px rgba(17,24,39,.55);
+  }
+  #rs-content{position:absolute;left:0;right:0;top:0;bottom:64px;overflow:hidden}
+  .rs-screen{position:absolute;inset:0;display:none}
+  .rs-screen.active{display:block}
+  .rs-scroll::-webkit-scrollbar{display:none}
+  .leaflet-container{background:#e6e8ec!important;font-family:Inter,system-ui,sans-serif}
+  .leaflet-control-attribution{font-size:9px;background:rgba(255,255,255,.7)!important;color:#98a1ad!important}
+  .leaflet-control-attribution a{color:#7c8694!important}
+  .leaflet-control-zoom{display:none!important}
+  .rs-route{transition:stroke .35s,stroke-width .3s,stroke-opacity .35s}
+  @keyframes rs-shim{0%{background-position:-260px 0}100%{background-position:260px 0}}
+  @keyframes rs-slidedown{from{transform:translateY(-120%);opacity:0}to{transform:translateY(0);opacity:1}}
+  @keyframes rs-fade{from{opacity:.4}to{opacity:1}}
+
+  /* bottom tab bar */
+  #rs-tabbar{
+    position:absolute;left:0;right:0;bottom:0;height:64px;z-index:20;
+    display:flex;justify-content:space-around;align-items:center;
+    padding:8px 8px 12px;background:#fff;border-top:1px solid #E5E7EB;
+  }
+  .rs-tab{display:flex;flex-direction:column;align-items:center;gap:5px;cursor:pointer;
+    color:#9AA1AC;flex:1;background:none;border:none;font-family:inherit}
+  .rs-tab span{font-size:10.5px;font-weight:500}
+  .rs-tab.active{color:#2563EB}
+  .rs-tab.active span{font-weight:600}
+  .rs-tab svg{stroke:currentColor}
+
+  @media (max-width:430px){
+    body{background:#F4F5F7}
+    /* dvh tracks the visible viewport as the browser toolbar shows/hides, so
+       the fixed 64px tab bar stays on-screen instead of sliding under the
+       browser chrome (which 100vh — the large viewport — would push it below). */
+    #rs-frame{width:100vw;height:100vh;height:100dvh;border-radius:0;box-shadow:none}
+  }
+</style>
+</head>
+<body>
+  <div id="rs-frame">
+    <div id="rs-content">
+      <div class="rs-screen active" id="screen-home"></div>
+      <div class="rs-screen" id="screen-routes"></div>
+      <div class="rs-screen" id="screen-rewards"></div>
+      <div class="rs-screen" id="screen-you"></div>
+    </div>
+    <nav id="rs-tabbar"></nav>
+  </div>
+
+  <script src="rs-i18n.js"></script>
+  <script src="rs-api.js"></script>
+  <script src="rs-screens.js"></script>
+  <script>
+  // ---- tab bar icons (match the design) ------------------------------------
+  const ICONS = {
+    home: '<path d="M4 11.5L12 4l8 7.5"/><path d="M6 10v9h12v-9"/>',
+    routes: '<path d="M9 3L3 6v15l6-3 6 3 6-3V3l-6 3-6-3z"/><path d="M9 3v15M15 6v15"/>',
+    rewards: '<rect x="3" y="8" width="18" height="13" rx="2"/><path d="M3 12h18M12 8v13M8 8a2.5 2.5 0 1 1 4-2.5A2.5 2.5 0 1 1 16 8"/>',
+    you: '<circle cx="12" cy="8" r="4"/><path d="M4 21c0-4 4-6 8-6s8 2 8 6"/>',
+  };
+  const qs = new URLSearchParams(location.search);
+  const T = (k, p) => window.RSI18n.t(k, p);
+
+  // ---- screen registry: lazy-mounted the first time a tab opens ------------
+  const TABS = [
+    { id: 'home', labelKey: 'tab_home', icon: 'home', el: 'screen-home',
+      make: (c) => new ContributionScreen(c, { user: qs.get('user'), demoState: qs.get('home') || 'normal' }) },
+    { id: 'routes', labelKey: 'tab_routes', icon: 'routes', el: 'screen-routes',
+      make: (c) => new RouteComparisonScreen(c, {
+        initialSelected: qs.get('selected') === 'fast' ? 'fast' : 'smooth',
+        startOffline: qs.get('offline') === '1', demoState: qs.get('routes_state') || 'normal' }) },
+    { id: 'rewards', labelKey: 'tab_rewards', icon: 'rewards', el: 'screen-rewards',
+      make: (c) => placeholder(c, 'tab_rewards', 'ph_rewards_sub') },
+    { id: 'you', labelKey: 'tab_you', icon: 'you', el: 'screen-you',
+      make: (c) => settingsScreen(c) },
+  ];
+
+  // A translated "coming soon" placeholder that re-renders on language change.
+  function placeholder(container, titleKey, subKey) {
+    const draw = () => {
+      container.innerHTML = `<div style="height:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;padding:40px;text-align:center">
+        <div style="width:64px;height:64px;border-radius:16px;background:#EAF1FE;display:flex;align-items:center;justify-content:center">
+          <svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="#2563EB" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 8v4l3 2"/></svg>
+        </div>
+        <div style="font-size:20px;font-weight:700">${T(titleKey)}</div>
+        <div style="font-size:14px;color:#6B7280;max-width:230px;line-height:1.5">${T(subKey)}</div>
+        <div style="font-size:12px;color:#9AA1AC;font-weight:600;letter-spacing:.04em;margin-top:4px">${T('coming_soon')}</div>
+      </div>`;
+    };
+    draw();
+    window.RSI18n.onChange(draw);
+    return { onShow() {}, onHide() {}, mount() {} };
+  }
+
+  // "You" tab: an in-app language switcher. Picking a language calls
+  // RSI18n.set(), which re-renders every screen live (same engine onboarding
+  // uses). Onboarding still sets the initial language via ?lang= / localStorage.
+  function settingsScreen(container) {
+    const draw = () => {
+      const rows = window.RSI18n.langs().map((l) => {
+        const on = l.code === window.RSI18n.get();
+        return `<div data-lang="${l.code}" style="display:flex;align-items:center;justify-content:space-between;
+          padding:15px 16px;border-radius:14px;background:#fff;cursor:pointer;
+          border:1px solid ${on ? '#2563EB' : '#E5E7EB'};${on ? 'box-shadow:0 0 0 1px #2563EB inset;' : ''}">
+          <div style="display:flex;flex-direction:column;gap:2px">
+            <span style="font-size:15px;font-weight:600">${l.native}</span>
+            <span style="font-size:12.5px;color:#6B7280">${l.en}</span>
+          </div>
+          <span style="display:${on ? 'inline-flex' : 'none'}"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#2563EB" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.5l4.2 4.2L19 7"/></svg></span>
+        </div>`;
+      }).join('');
+      container.innerHTML = `<div class="rs-scroll" style="height:100%;overflow-y:auto;padding:56px 22px 28px">
+        <div style="font-size:24px;font-weight:700;letter-spacing:-.02em">${T('tab_you')}</div>
+        <div style="font-size:13px;font-weight:600;color:#6B7280;margin:22px 0 12px;text-transform:uppercase;letter-spacing:.04em">${T('language_label')}</div>
+        <div style="display:flex;flex-direction:column;gap:10px">${rows}</div>
+      </div>`;
+      container.querySelectorAll('[data-lang]').forEach((el) =>
+        el.addEventListener('click', () => window.RSI18n.set(el.getAttribute('data-lang'))));
+    };
+    draw();
+    window.RSI18n.onChange(draw);
+    return { onShow() {}, onHide() {}, mount() {} };
+  }
+
+  const instances = {};
+  let current = null;
+
+  function activate(id) {
+    if (current === id) return;
+    const tab = TABS.find(t => t.id === id);
+    const container = document.getElementById(tab.el);
+    if (!instances[id]) { instances[id] = tab.make(container); instances[id].mount && instances[id].mount(); }
+    if (current && instances[current]) instances[current].onHide && instances[current].onHide();
+
+    TABS.forEach(t => {
+      document.getElementById(t.el).classList.toggle('active', t.id === id);
+      document.getElementById('tab-' + t.id).classList.toggle('active', t.id === id);
+    });
+    current = id;
+    instances[id].onShow && instances[id].onShow();
+  }
+
+  // ---- render tab bar (re-labels live on language change) ------------------
+  const bar = document.getElementById('rs-tabbar');
+  function renderBar() {
+    bar.innerHTML = TABS.map(t => `<button class="rs-tab${t.id === current ? ' active' : ''}" id="tab-${t.id}">
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">${ICONS[t.icon]}</svg>
+      <span>${T(t.labelKey)}</span></button>`).join('');
+    TABS.forEach(t => document.getElementById('tab-' + t.id).addEventListener('click', () => activate(t.id)));
+  }
+  renderBar();
+  window.RSI18n.onChange(renderBar);
+
+  // ---- boot on the requested tab (?tab=routes for the route screen) --------
+  // Wait for the active language's pre-baked strings so the first paint is
+  // already localized (language comes from onboarding via ?lang= / localStorage).
+  window.RSI18n.ready().then(() =>
+    activate(qs.get('tab') && TABS.some(t => t.id === qs.get('tab')) ? qs.get('tab') : 'home'));
+  </script>
+</body>
+</html>

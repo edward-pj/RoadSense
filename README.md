@@ -477,7 +477,26 @@ python -m venv .venv && source .venv/bin/activate      # or .venv\Scripts\activa
 pip install -r cloud/requirements.txt -r pc/requirements.txt
 ```
 
-### 2. Start the cloud fusion service
+### Secrets (`.env`)
+
+The driver app's voice alerts and UI-string translation use **Sarvam AI**. Put
+the key in a repo-root `.env` (git-ignored; loaded via `python-dotenv`):
+
+```
+SARVAM_API_KEY=sk_...
+```
+
+It stays **server-side** — the static mobile page reaches Sarvam only through
+the backend proxies `POST /api/v1/tts` and `POST /api/v1/translate`. Without a
+key, the app still works: UI text uses the committed pre-baked translations and
+the voice alert falls back to the browser's on-device speech.
+
+Re-generate the pre-baked UI translations after editing English copy:
+```bash
+python tools/translate_ui.py       # Sarvam Translate -> mobile/i18n/app.<lang>.json
+```
+
+### 1. Run the cloud fusion service
 
 ```bash
 uvicorn cloud.app:app --host 0.0.0.0 --port 8000
@@ -506,15 +525,24 @@ pip install onnxruntime-qnn              # native ARM64 Python, not emulated x86
 python tools/verify_npu.py               # must print "NPU device found: True"
 ```
 
-### 5. Run the Arduino UNO Q
+### 4. Access the Frontends & Dashboards
 
-Open `unoq/` in Arduino App Lab. The runtime reads `app.yaml`, loads the MCU sketch and MPU Python application. Set the environment variable:
+With the servers running, the three frontends are served statically:
+
+* **Telemetry Data Dashboard (PC Hop 3)**: Open **`http://localhost:8100/`**
+  * Visualizes the live 5-hop Snapdragon execution pipeline and real-time IMU waveforms.
+* **Driver Phone App Simulator (Phone Hop 5)**: Open **`http://localhost:8100/mobile/`**
+  * Shows driver navigation (Fastest vs. Smoothest routes), coin/incentive ledger, and plays English/Hindi TTS voice alerts for approaching road hazards.
+* **Municipal Authority Dashboard (Cloud Hop 4)**: Open **`http://localhost:8000/`**
+  * Displays H3 resolution-12 spatial hotspots, repair backlog prioritization, and fleet statistics.
+
+### 5. Run the UNO Q app
 
 ```
 ROADSENSE_PC_WS=ws://<x-elite-ip>:8100/ws/ingest
 ```
 
-### 6. Train and export models
+### 6. Train + export models (pre-event; AI Hub jobs queue on shared hardware)
 
 ```bash
 pip install torch qai-hub

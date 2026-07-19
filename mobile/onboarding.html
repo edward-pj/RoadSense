@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>RoadSense // Onboarding</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%}
+  body{
+    background:#eef0f4;font-family:Inter,system-ui,sans-serif;color:#111827;
+    display:flex;align-items:center;justify-content:center;
+    min-height:100vh;min-height:100dvh;
+    -webkit-font-smoothing:antialiased;
+  }
+  #rs-frame{
+    width:390px;height:844px;position:relative;overflow:hidden;background:#F4F5F7;
+    border-radius:26px;box-shadow:0 24px 60px -18px rgba(17,24,39,.55);
+  }
+  .rs-scroll::-webkit-scrollbar{display:none}
+  @media (max-width:430px){
+    body{background:#F4F5F7}
+    #rs-frame{width:100vw;height:100vh;height:100dvh;border-radius:0;box-shadow:none}
+  }
+</style>
+</head>
+<body>
+  <div id="rs-frame"></div>
+
+  <script src="rs-i18n.js"></script>
+  <script src="rs-onboarding.js"></script>
+  <script>
+  // The onboarding flow hands off to the real driver app: tapping "Open
+  // RoadSense" on the done screen navigates to app.html. The chosen language
+  // already lives in localStorage (rs_lang), so the app opens in it; we also
+  // pass ?user so app.html mounts the signed-in profile.
+  const frame = document.getElementById('rs-frame');
+  const onb = new OnboardingScreen(frame, {
+    onComplete: (info) => { console.log('RoadSense onboarding complete', info); },
+    onEnter: (info) => {
+      const q = new URLSearchParams({ user: info.user, lang: info.lang });
+      window.location.href = 'app.html?' + q.toString();
+    }
+  });
+  onb.mount();
+  </script>
+</body>
+</html>

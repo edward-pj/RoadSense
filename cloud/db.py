@@ -9,6 +9,9 @@ from __future__ import annotations
 
 import os
 import sqlite3
+from dotenv import load_dotenv
+
+load_dotenv()
 
 DB_PATH = os.environ.get("ROADSENSE_DB", "roadsense.db")
 
