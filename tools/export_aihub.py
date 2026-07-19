@@ -31,12 +31,12 @@ TARGETS = {
     "xelite": {
         "device": "Snapdragon X Elite CRD",
         "runtime_flag": "--target_runtime qnn_context_binary",
-        "artifact": "classifier_xelite.bin",
+        "suffix": "xelite.bin",
     },
     "phone": {
-        "device": "Snapdragon 8 Elite QRD",
+        "device": "Snapdragon 8 Elite Gen 5 QRD",
         "runtime_flag": "--target_runtime tflite",
-        "artifact": "classifier_v81.tflite",
+        "suffix": "v81.tflite",
     },
 }
 
@@ -66,33 +66,44 @@ def main() -> int:
     cfg = TARGETS[args.target]
     device = hub.Device(args.device or cfg["device"])
     model_path = args.model
+    tflite = "tflite" in cfg["runtime_flag"]
+
+    if not CALIB.exists():
+        print(f"missing {CALIB} — run tools/train.py first", file=sys.stderr)
+        return 1
+    calib = np.load(CALIB).astype(np.float32)
+    calib_data = {"window": [w[np.newaxis] for w in calib]}
 
     # ---- 1. INT8 quantization with REAL calibration windows -----------------
     # Calibrating on random noise silently destroys accuracy; windows.npy is
     # sampled from the training distribution by tools/train.py.
-    if not args.skip_quantize:
-        if not CALIB.exists():
-            print(f"missing {CALIB} — run tools/train.py first", file=sys.stderr)
-            return 1
-        calib = np.load(CALIB).astype(np.float32)
+    #
+    # tflite targets skip the standalone quantize job: converting a
+    # pre-quantized ONNX to tflite trips a 'tfl.transpose' quantized-axes bug
+    # in the AI Hub converter, so we quantize during compile instead.
+    if tflite or args.skip_quantize:
+        quantized = str(model_path)
+    else:
         print(f"quantize: {model_path.name} with {len(calib)} calibration windows")
         qjob = hub.submit_quantize_job(
             model=str(model_path),
-            calibration_data={"window": [w[np.newaxis] for w in calib]},
+            calibration_data=calib_data,
             weights_dtype=hub.QuantizeDtype.INT8,
             activations_dtype=hub.QuantizeDtype.INT8,
         )
         quantized = qjob.get_target_model()
         assert quantized is not None, f"quantize failed: {qjob.url}"
         print(f"quantized ok: {qjob.url}")
-    else:
-        quantized = str(model_path)
 
     # ---- 2. Compile for the target runtime ----------------------------------
     print(f"compile: target={args.target} device='{device.name}'")
+    options = cfg["runtime_flag"]
+    if tflite and not args.skip_quantize:
+        options += " --quantize_full_type int8 --quantize_io"
     cjob = hub.submit_compile_job(
-        model=quantized, device=device, options=cfg["runtime_flag"],
-        input_specs={"window": (1, 6, 128)},
+        model=quantized, device=device, options=options,
+        input_specs={"window": (1, 6, 16)},
+        calibration_data=calib_data if tflite and not args.skip_quantize else None,
     )
     compiled = cjob.get_target_model()
     assert compiled is not None, f"compile failed: {cjob.url}"
@@ -111,7 +122,7 @@ def main() -> int:
 
     # ---- 4. Download the deployable artifact --------------------------------
     MODELS.mkdir(exist_ok=True)
-    out = MODELS / cfg["artifact"]
+    out = MODELS / f"{args.model.stem}_{cfg['suffix']}"
     compiled.download(str(out))
     print(f"artifact -> {out}  (commit this)")
     return 0
