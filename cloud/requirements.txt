@@ -1,5 +1,6 @@
 fastapi>=0.111
-uvicorn[standard]>=0.30
+uvicorn>=0.30
+websockets
 h3>=4.0
 pydantic>=2.7
 pytest>=8.0

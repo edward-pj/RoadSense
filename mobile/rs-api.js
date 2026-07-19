@@ -11,8 +11,22 @@
 // ============================================================================
 (function () {
   const qs = new URLSearchParams(location.search);
+
+  // Smart default API URL: Use current hostname if accessing via Wi-Fi/local IP
+  let defaultApiUrl = 'http://localhost:8000';
+  if (typeof window !== 'undefined' && window.location && window.location.hostname) {
+    const hostname = window.location.hostname;
+    if (hostname !== 'localhost' && hostname !== '127.0.0.1') {
+      if (window.location.port) {
+        defaultApiUrl = window.location.origin;
+      } else {
+        defaultApiUrl = `${window.location.protocol}//${hostname}:8000`;
+      }
+    }
+  }
+
   const CONFIG = {
-    baseUrl: qs.get('api') || 'http://localhost:8000',
+    baseUrl: qs.get('api') || defaultApiUrl,
     user: qs.get('user') || 'sim-user-0000',
     routesLive: qs.get('routes') === 'live',
   };
