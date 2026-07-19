@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/images/hero-banner.png" alt="RoadSense AI — Every Vehicle is a Road Sensor" width="100%">
+  <img src="assets/images/Playful Name Game Image (1).png" alt="RoadSense AI — Every Vehicle is a Road Sensor" width="100%">
 </p>
 
 <h1 align="center">RoadSense AI</h1>
