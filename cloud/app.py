@@ -100,6 +100,12 @@ class TranslateIn(BaseModel):
     target: str = "hi"
 
 
+class AnalyzeHazardIn(BaseModel):
+    image_id: int
+    hazard_data: dict[str, Any]
+
+
+
 @app.get("/health")
 def health() -> dict[str, str]:
     return {"status": "ok"}
@@ -261,6 +267,50 @@ async def translate_text(body: TranslateIn) -> Response:
     except sarvam.SarvamError as exc:
         return _sarvam_error(exc)
     return JSONResponse(content={"translated_text": out})
+
+
+@app.post("/api/v1/analyze_hazard")
+async def analyze_hazard(body: AnalyzeHazardIn) -> dict[str, Any]:
+    """Sends the hazard data to local AnythingLLM (NPU model) for analysis."""
+    import httpx
+    import os
+    
+    severity = body.hazard_data.get('severity', 'unknown')
+    
+    message = (f"Here is the hazard description: A pothole with severity {severity}/10. "
+               f"Additional data: {body.hazard_data}. "
+               "Provide a descriptive analysis of this hazard, potential impact on vehicles, and repair recommendations.")
+              
+    payload = {
+        "message": message,
+        "mode": "chat"
+    }
+    
+    api_key = os.getenv("NPU_LLM_API_KEY", "")
+    # Defaulting to 'roadsense' slug; user can configure in .env if different
+    workspace_slug = os.getenv("ANYTHINGLLM_WORKSPACE_SLUG", "roadsense")
+    
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json"
+    }
+        
+    try:
+        async with httpx.AsyncClient(timeout=None) as client:
+            resp = await client.post(
+                f"http://localhost:3001/api/v1/workspace/{workspace_slug}/chat", 
+                json=payload,
+                headers=headers
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                # AnythingLLM typically returns the response in 'textResponse'
+                response_text = data.get("textResponse", data.get("text", str(data)))
+                return {"description": response_text}
+            else:
+                return {"description": f"AnythingLLM error: {resp.status_code} - {resp.text}"}
+    except Exception as e:
+        return {"description": f"Failed to connect to AnythingLLM NPU: {e}"}
 
 
 app.mount("/", StaticFiles(directory="cloud/dashboard", html=True), name="dashboard")

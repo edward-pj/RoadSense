@@ -102,7 +102,8 @@
         this.map.on('click', 'hex-fill', (e) => {
           const f = e.features[0]; if (!f) return;
           const p = f.properties;
-          this.popup.setLngLat([p.lng, p.lat]).setHTML(this.hazardPopup(p)).addTo(this.map);
+          if (this.popup && this.popup.isOpen()) this.popup.remove();
+          this.openAiModal(p);
         });
         this.map.on('mouseenter', 'hex-fill', () => { this.map.getCanvas().style.cursor = 'pointer'; });
         this.map.on('mouseleave', 'hex-fill', () => { this.map.getCanvas().style.cursor = ''; });
@@ -313,6 +314,43 @@
       });
     }
 
+    async openAiModal(p) {
+      try {
+        const modal = document.getElementById('rs-ai-modal');
+        if (!modal) return;
+        const img = document.getElementById('rs-ai-img');
+        const desc = document.getElementById('rs-ai-desc');
+        const meta = document.getElementById('rs-ai-meta');
+        const closeBtn = document.getElementById('rs-ai-close');
+        
+        closeBtn.onclick = () => { modal.style.display = 'none'; };
+        
+        const imageId = Math.floor(Math.random() * 4) + 1;
+        img.src = `images/pothole_${imageId}.jpg`;
+        img.onerror = () => { img.src = 'data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="240" height="180"><rect width="100%" height="100%" fill="%23232B36"/><text x="50%" y="50%" fill="%238B949E" font-family="sans-serif" font-size="14" text-anchor="middle">Image Not Found</text></svg>'; };
+        
+        meta.innerHTML = `<div>Severity: <strong style="color:#F59E0B">${Number(p.severity || 0).toFixed(1)}</strong></div>
+                          <div>Status: ${p.status || 'UNKNOWN'}</div>
+                          <div>Reports: ${p.n_reports || 0}</div>`;
+        
+        desc.innerHTML = '<span style="color:#8B949E">Connecting to Gemma 4 e4b...</span>';
+        modal.style.display = 'flex';
+        
+        const res = await fetch('/api/v1/analyze_hazard', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({ image_id: imageId, hazard_data: p })
+        });
+        const data = await res.json();
+        desc.innerHTML = (data.description || 'No description returned.').replace(/\\n/g, '<br/>');
+      } catch (err) {
+        const desc = document.getElementById('rs-ai-desc');
+        if (desc) {
+          desc.innerHTML = `<span style="color:#EF4444">Failed to fetch analysis: ${err.message}</span>`;
+        }
+      }
+    }
+
     // ---- static shell ------------------------------------------------------
     renderShell() {
       this.root.innerHTML = `
@@ -365,6 +403,24 @@
           </aside>
         </main>
         <footer id="rs-stats" style="flex:0 0 64px;display:flex;align-items:stretch;border-top:1px solid #232B36;background:#0B0F14;"></footer>
+        <div id="rs-ai-modal" style="display:none;position:fixed;inset:0;z-index:9999;background:rgba(11,15,20,0.85);backdrop-filter:blur(4px);align-items:center;justify-content:center;">
+          <div style="background:#10151c;border:1px solid #232B36;border-radius:12px;width:600px;max-width:90vw;display:flex;flex-direction:column;overflow:hidden;box-shadow:0 20px 40px rgba(0,0,0,0.5);">
+            <div style="padding:16px 20px;border-bottom:1px solid #232B36;display:flex;justify-content:space-between;align-items:center;">
+              <span style="font-size:16px;font-weight:700;color:#E6EDF3;">Gemma AI Analysis</span>
+              <button id="rs-ai-close" style="background:transparent;border:none;color:#8B949E;cursor:pointer;font-size:20px;line-height:1;">&times;</button>
+            </div>
+            <div style="padding:20px;display:flex;gap:20px;">
+              <div style="flex:0 0 240px;">
+                <img id="rs-ai-img" src="" style="width:100%;height:180px;object-fit:cover;border-radius:8px;background:#0B0F14;" />
+                <div id="rs-ai-meta" style="margin-top:12px;font-size:12px;color:#8B949E;line-height:1.5;"></div>
+              </div>
+              <div style="flex:1 1 auto;display:flex;flex-direction:column;min-width:0;">
+                <div style="font-size:13px;font-weight:600;color:#8B949E;margin-bottom:8px;text-transform:uppercase;letter-spacing:.05em;">AI Description</div>
+                <div id="rs-ai-desc" style="font-size:14px;line-height:1.6;color:#E6EDF3;flex:1 1 auto;overflow-y:auto;max-height:260px;padding-right:8px;"></div>
+              </div>
+            </div>
+          </div>
+        </div>
       </div>`;
     }
   }
