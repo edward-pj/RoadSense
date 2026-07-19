@@ -1,10 +1,11 @@
 """Train the gate + classifier models and export static-shape ONNX.
 
 Usage:
-  python tools/train.py --data data/roadsense_v1.csv --out models/
+  python tools/train.py --data data/roadsense_real.csv --out models/
   python tools/train.py --synthetic --out models/   # bootstrap without real data
 
-Real data CSV columns: label, then 128x6 flattened samples (ax0..gz127).
+Real data CSV columns: label, then 16x6 flattened samples at 10 Hz
+(t0: ax,ay,az,gx,gy,gz ... t15) — produced by tools/prepare_data.py.
 Labels: smooth=0, pothole=1, speed_breaker=2, rough_patch=3.
 
 Exports (opset 17, static shapes — required for clean NPU compilation):
@@ -86,25 +87,55 @@ def train_and_export(X: np.ndarray, y: np.ndarray, out: Path, epochs: int) -> No
     from torch.utils.data import DataLoader, TensorDataset
 
     gate, clf = build_models()
-    xt = torch.from_numpy(X.transpose(0, 2, 1))  # (n, 6, 128)
-    yt = torch.from_numpy(y)
-    sev = (yt != 0).float().unsqueeze(1)  # crude severity proxy for synthetic
+
+    # Stratified-ish 85/15 split so reported accuracy is held-out, not train.
+    rng = np.random.default_rng(42)
+    order = rng.permutation(len(X))
+    n_val = max(1, len(X) // 7)
+    val_idx, tr_idx = order[:n_val], order[n_val:]
+
+    xt = torch.from_numpy(X[tr_idx].transpose(0, 2, 1))  # (n, 6, 16)
+    yt = torch.from_numpy(y[tr_idx])
+    sev = (yt != 0).float().unsqueeze(1)  # severity proxy: any event = severe-ish
     dl = DataLoader(TensorDataset(xt, yt, sev), batch_size=64, shuffle=True)
+    xv = torch.from_numpy(X[val_idx].transpose(0, 2, 1))
+    yv = torch.from_numpy(y[val_idx])
+
+    # Inverse-frequency class weights: real drive data is smooth-heavy.
+    counts = np.bincount(y[tr_idx], minlength=N_CLASSES).astype(np.float32)
+    weights = torch.from_numpy(counts.sum() / (N_CLASSES * np.maximum(counts, 1)))
 
     opt = torch.optim.Adam(list(clf.parameters()) + list(gate.parameters()), lr=1e-3)
     for epoch in range(epochs):
+        clf.train(); gate.train()
         correct = total = 0
         for xb, yb, sb in dl:
             opt.zero_grad()
             logits, sev_pred = clf(xb)
-            loss = (torch.nn.functional.cross_entropy(logits, yb)
+            loss = (torch.nn.functional.cross_entropy(logits, yb, weight=weights)
                     + torch.nn.functional.mse_loss(sev_pred, sb)
                     + torch.nn.functional.binary_cross_entropy(gate(xb), sb))
             loss.backward()
             opt.step()
             correct += (logits.argmax(1) == yb).sum().item()
             total += len(yb)
-        print(f"epoch {epoch + 1}/{epochs} acc={correct / total:.3f}")
+        clf.eval(); gate.eval()
+        with torch.no_grad():
+            val_pred = clf(xv)[0].argmax(1)
+            gate_pred = (gate(xv) > 0.5).squeeze(1).long()
+        val_acc = (val_pred == yv).float().mean().item()
+        gate_acc = (gate_pred == (yv != 0).long()).float().mean().item()
+        print(f"epoch {epoch + 1}/{epochs} train_acc={correct / total:.3f} "
+              f"val_acc={val_acc:.3f} gate_val_acc={gate_acc:.3f}")
+
+    with torch.no_grad():
+        val_pred = clf(xv)[0].argmax(1)
+    names = ["smooth", "pothole", "speed_breaker", "rough_patch"]
+    for c, name in enumerate(names):
+        mask = yv == c
+        if mask.any():
+            acc = (val_pred[mask] == c).float().mean().item()
+            print(f"  val {name}: {acc:.3f} (n={int(mask.sum())})")
 
     out.mkdir(parents=True, exist_ok=True)
     dummy = torch.zeros(1, CHANNELS, WINDOW)
