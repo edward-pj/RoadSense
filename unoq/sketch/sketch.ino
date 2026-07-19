@@ -1,101 +1,262 @@
-/*
- * RoadSense MCU sketch (hop 1) — STM32U585, Zephyr.
- *
- * Samples the IMU at a deterministic 100 Hz (the reason this hop exists:
- * Linux cannot guarantee this timing), keeps a 2 s ring buffer, and on a
- * vertical-acceleration peak sends the 128-sample window centred on the
- * trigger to the MPU via Bridge RPC.
- *
- * IMPORTANT: the Bridge owns the inter-chip serial link. Never touch
- * Serial1. Verify Bridge API names against the App Lab Blink example
- * before flashing — adjust here if they differ.
- *
- * IMU: Modulino Movement (Qwiic) primary, MPU6050 (I2C) backup.
- * GPS: NEO-6M on UART, NMEA at 1 Hz (optional; 0,0 sent when absent).
- */
-
-#include <Arduino.h>
+#include "Arduino_RouterBridge.h"
+#include <TinyGPSPlus.h>
 #include <Wire.h>
-#include "Modulino.h"          // Modulino Movement (Qwiic IMU)
-#include <ArduinoBridge.h>     // App Lab Bridge — verify exact header on-site
+#include <MPU6050.h>
+#include <Arduino_LED_Matrix.h>
 
-constexpr int   SAMPLE_HZ      = 100;
-constexpr int   RING_SIZE      = 200;   // 2 s
-constexpr int   WINDOW_SIZE    = 128;   // 64 before + 64 after trigger
-constexpr int   HALF_WINDOW    = WINDOW_SIZE / 2;
-constexpr float TRIGGER_G      = 0.35f; // |az - 1g| threshold
-constexpr int   COOLDOWN_MS    = 1500;  // one event per bump, not five
+TinyGPSPlus gps;
+MPU6050 mpu;
 
-ModulinoMovement imu;
+#define gpsSerial Serial
 
-static float ring[RING_SIZE][6];
-static int   head = 0;
-static unsigned long lastTriggerMs = 0;
-static int   postTriggerLeft = -1;      // counts samples after a trigger
+Arduino_LED_Matrix matrix;
 
-static float gpsLat = 0.0f, gpsLng = 0.0f, gpsSpeedKmh = 30.0f;
+const uint8_t ROWS = 8;
+const uint8_t COLS = 13;
+const uint8_t BRIGHT = 75;
+const uint16_t SCROLL_MS = 90;
+const char* MESSAGE = "ASPHALT WHISPER";
 
-void setup() {
-  Modulino.begin();
-  imu.begin();
+struct Glyph {
+  char c;
+  uint8_t col[5];
+};
+
+const Glyph FONT[] = {
+  {' ', {0x00,0x00,0x00,0x00,0x00}},
+  {'A', {0x7C,0x12,0x11,0x12,0x7C}},
+  {'E', {0x7F,0x49,0x49,0x49,0x41}},
+  {'H', {0x7F,0x08,0x08,0x08,0x7F}},
+  {'I', {0x00,0x41,0x7F,0x41,0x00}},
+  {'L', {0x7F,0x40,0x40,0x40,0x40}},
+  {'P', {0x7F,0x09,0x09,0x09,0x06}},
+  {'R', {0x7F,0x09,0x19,0x29,0x46}},
+  {'S', {0x46,0x49,0x49,0x49,0x31}},
+  {'T', {0x01,0x01,0x7F,0x01,0x01}},
+  {'W', {0x7F,0x20,0x18,0x20,0x7F}},
+};
+
+uint8_t gColumns[220];
+int gNumCols = 0;
+int scrollOffset = 0;
+unsigned long lastScroll = 0;
+
+const uint8_t* glyphFor(char ch)
+{
+  for (auto &g : FONT)
+    if (g.c == ch)
+      return g.col;
+
+  return FONT[0].col;
+}
+
+void buildColumns()
+{
+  gNumCols = 0;
+
+  for (int i = 0; i < COLS; i++)
+    gColumns[gNumCols++] = 0x00;
+
+  for (const char* p = MESSAGE; *p; ++p)
+  {
+    const uint8_t* g = glyphFor(*p);
+
+    for (int c = 0; c < 5; c++)
+      gColumns[gNumCols++] = g[c];
+
+    gColumns[gNumCols++] = 0x00;
+  }
+
+  for (int i = 0; i < COLS; i++)
+    gColumns[gNumCols++] = 0x00;
+}
+
+void renderWindow(int offset)
+{
+  uint8_t frame[ROWS * COLS];
+  memset(frame, 0, sizeof(frame));
+
+  for (int x = 0; x < COLS; x++)
+  {
+    int s = offset + x;
+    uint8_t bits = (s >= 0 && s < gNumCols) ? gColumns[s] : 0x00;
+
+    for (int r = 0; r < 7; r++)
+    {
+      if (bits & (1 << r))
+        frame[r * COLS + x] = BRIGHT;
+    }
+  }
+
+  matrix.draw(frame);
+}
+
+struct SensorSnapshot
+{
+  int16_t ax, ay, az;
+  int16_t gx, gy, gz;
+
+  double latitude;
+  double longitude;
+  double altitude;
+  double speedKmph;
+  double courseDeg;
+
+  int satellites;
+  bool gpsFixValid;
+
+  int utcHour;
+  int utcMinute;
+  int utcSecond;
+
+  int year;
+  int month;
+  int day;
+};
+
+SensorSnapshot snapshot;
+
+unsigned long lastSensorRead = 0;
+const unsigned long sensorReadInterval = 100;
+
+void updateSensorSnapshot()
+{
+  mpu.getMotion6(
+    &snapshot.ax,
+    &snapshot.ay,
+    &snapshot.az,
+    &snapshot.gx,
+    &snapshot.gy,
+    &snapshot.gz
+  );
+
+  while (gpsSerial.available())
+    gps.encode(gpsSerial.read());
+
+  snapshot.gpsFixValid = gps.location.isValid();
+
+  if (snapshot.gpsFixValid)
+  {
+    snapshot.latitude = gps.location.lat();
+    snapshot.longitude = gps.location.lng();
+    snapshot.altitude = gps.altitude.meters();
+    snapshot.speedKmph = gps.speed.kmph();
+    snapshot.courseDeg = gps.course.deg();
+    snapshot.satellites = gps.satellites.value();
+  }
+
+  if (gps.time.isValid())
+  {
+    snapshot.utcHour = gps.time.hour();
+    snapshot.utcMinute = gps.time.minute();
+    snapshot.utcSecond = gps.time.second();
+  }
+
+  if (gps.date.isValid())
+  {
+    snapshot.year = gps.date.year();
+    snapshot.month = gps.date.month();
+    snapshot.day = gps.date.day();
+  }
+}
+
+String get_imu(String arg)
+{
+  char buf[64];
+
+  snprintf(
+    buf,
+    sizeof(buf),
+    "%d,%d,%d,%d,%d,%d",
+    snapshot.ax,
+    snapshot.ay,
+    snapshot.az,
+    snapshot.gx,
+    snapshot.gy,
+    snapshot.gz
+  );
+
+  return String(buf);
+}
+
+String get_gps(String arg)
+{
+  char buf[160];
+
+  snprintf(
+    buf,
+    sizeof(buf),
+    "%d,%.6f,%.6f,%.2f,%.2f,%.2f,%d,%02d,%02d,%02d,%04d,%02d,%02d",
+    snapshot.gpsFixValid ? 1 : 0,
+    snapshot.latitude,
+    snapshot.longitude,
+    snapshot.altitude,
+    snapshot.speedKmph,
+    snapshot.courseDeg,
+    snapshot.satellites,
+    snapshot.utcHour,
+    snapshot.utcMinute,
+    snapshot.utcSecond,
+    snapshot.year,
+    snapshot.month,
+    snapshot.day
+  );
+
+  return String(buf);
+}
+
+void setup()
+{
+  Monitor.begin();
+
+  gpsSerial.begin(9600);
+  Wire.begin();
+
+  matrix.begin();
+  matrix.setGrayscaleBits(8);
+  matrix.clear();
+  buildColumns();
+
+  if (Monitor)
+    Monitor.println("Initializing MPU6050...");
+
+  mpu.initialize();
+
+  if (Monitor)
+  {
+    if (mpu.testConnection())
+      Monitor.println("MPU6050 Connected!");
+    else
+      Monitor.println("MPU6050 NOT Found!");
+  }
+
   Bridge.begin();
+
+  Bridge.provide_safe("get_imu", get_imu);
+  Bridge.provide_safe("get_gps", get_gps);
+
+  if (Monitor)
+    Monitor.println("Bridge ready. Headless safety enabled.");
 }
 
-static void sampleImu() {
-  imu.update();
-  float* slot = ring[head];
-  slot[0] = imu.getX();      // accel g
-  slot[1] = imu.getY();
-  slot[2] = imu.getZ();
-  slot[3] = imu.getRoll();   // gyro dps — verify getter names for the lib version
-  slot[4] = imu.getPitch();
-  slot[5] = imu.getYaw();
-  head = (head + 1) % RING_SIZE;
-}
+void loop()
+{
+  unsigned long now = millis();
 
-static bool triggered() {
-  int last = (head + RING_SIZE - 1) % RING_SIZE;
-  float az = ring[last][2];
-  return fabsf(az - 1.0f) > TRIGGER_G &&
-         (millis() - lastTriggerMs) > COOLDOWN_MS;
-}
-
-static void sendWindow() {
-  // Serialize the 128x6 window centred on the trigger as JSON for the MPU.
-  // Start = 128 samples back from head (64 pre-trigger + 64 post already sampled).
-  String msg = "{\"ts\":" + String(millis() / 1000.0, 3) +
-               ",\"lat\":" + String(gpsLat, 6) +
-               ",\"lng\":" + String(gpsLng, 6) +
-               ",\"speed_kmh\":" + String(gpsSpeedKmh, 1) +
-               ",\"window\":[";
-  int start = (head + RING_SIZE - WINDOW_SIZE) % RING_SIZE;
-  for (int i = 0; i < WINDOW_SIZE; i++) {
-    float* s = ring[(start + i) % RING_SIZE];
-    msg += "[";
-    for (int c = 0; c < 6; c++) {
-      msg += String(s[c], 4);
-      if (c < 5) msg += ",";
-    }
-    msg += (i < WINDOW_SIZE - 1) ? "]," : "]";
+  if (now - lastSensorRead >= sensorReadInterval)
+  {
+    lastSensorRead = now;
+    updateSensorSnapshot();
   }
-  msg += "]}";
-  Bridge.call("submit_window", msg);
-}
 
-void loop() {
-  static unsigned long nextSampleUs = micros();
-  if ((long)(micros() - nextSampleUs) >= 0) {
-    nextSampleUs += 1000000UL / SAMPLE_HZ;
-    sampleImu();
+  if (now - lastScroll >= SCROLL_MS)
+  {
+    lastScroll = now;
+    renderWindow(scrollOffset);
 
-    if (postTriggerLeft > 0 && --postTriggerLeft == 0) {
-      sendWindow();                     // window is now centred on the peak
-    }
-    if (postTriggerLeft <= 0 && triggered()) {
-      lastTriggerMs = millis();
-      postTriggerLeft = HALF_WINDOW;    // wait for 64 post-trigger samples
-    }
+    scrollOffset++;
+
+    if (scrollOffset > gNumCols - COLS)
+      scrollOffset = 0;
   }
-  // GPS NMEA parsing (UART) goes here when the module is attached:
-  // update gpsLat/gpsLng/gpsSpeedKmh from RMC sentences at 1 Hz.
 }
