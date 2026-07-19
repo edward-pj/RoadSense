@@ -1,130 +1,185 @@
-"""UNO Q MPU (hop 2): gate model + Wi-Fi forwarder.
-
-Receives 128x6 IMU windows from the MCU over the Bridge, runs the INT8 gate
-model on the Hexagon DSP v66 (SNPE), and forwards survivors to the X Elite
-over WebSocket. Raw signal for rejected windows never leaves this board.
-
-The Bridge exclusively owns the MCU serial link — never touch Serial1.
-Verify the exact Bridge API against the App Lab Blink example on-site.
-"""
-
-from __future__ import annotations
-
-import json
-import logging
-import os
-import queue
-import subprocess
-import tempfile
-import threading
+from arduino.app_utils import *
 import time
+import socket
+import threading
 
-import numpy as np
+ACCEL_LSB_PER_G = 16384.0
+GYRO_LSB_PER_DPS = 131.0
 
-logging.basicConfig(level=logging.INFO,
-                    format="%(asctime)s %(name)s %(levelname)s %(message)s")
-log = logging.getLogger("roadsense.unoq")
+def counts_to_g(raw):
+    return raw / ACCEL_LSB_PER_G
 
-from dotenv import load_dotenv
-load_dotenv()
+def counts_to_dps(raw):
+    return raw / GYRO_LSB_PER_DPS
 
-PC_WS_URL = os.environ.get("ROADSENSE_PC_WS", "ws://192.168.1.10:8100/ws/ingest")
-DEVICE_ID = os.environ.get("ROADSENSE_DEVICE_ID", "unoq-01")
-USER_ID = os.environ.get("ROADSENSE_USER_ID", "driver-01")
-GATE_DLC = os.path.join(os.path.dirname(__file__), "..", "..", "models", "gate_int8.dlc")
+STREAM_PORT = 9000
+SAMPLE_PERIOD = 0.1
 
-_outbox: queue.Queue[dict] = queue.Queue(maxsize=64)
-_seq = 0
+def parse_imu(raw: str):
+    try:
+        ax, ay, az, gx, gy, gz = map(int, raw.split(','))
+        return {
+            "ax": ax,
+            "ay": ay,
+            "az": az,
+            "gx": gx,
+            "gy": gy,
+            "gz": gz,
+        }
+    except ValueError:
+        return None
 
+def parse_gps(raw: str):
+    try:
+        parts = raw.split(',')
 
-def gate(window: np.ndarray) -> bool:
-    """True if the window is a real road event, False for noise.
+        fix_valid = int(parts[0]) == 1
+        lat, lon, alt, speed, course = map(float, parts[1:6])
+        sats = int(parts[6])
+        hh, mm, ss = map(int, parts[7:10])
+        year, month, day = map(int, parts[10:13])
 
-    Uses the INT8 gate model on the Hexagon DSP via snpe-net-run when the
-    .dlc is present; otherwise a deterministic variance+peak rule so the
-    pipeline works end-to-end before models are deployed.
-    """
-    if os.path.exists(GATE_DLC):
-        try:
-            return _gate_dsp(window)
-        except Exception as exc:
-            log.warning("DSP gate failed (%s); using rule gate", exc)
-    az = window[:, 2] - 1.0
-    return bool(np.max(np.abs(az)) > 0.3 and np.var(az) > 0.002)
+        return {
+            "fix_valid": fix_valid,
+            "lat": lat,
+            "lon": lon,
+            "altitude": alt,
+            "speed_kmph": speed,
+            "course_deg": course,
+            "satellites": sats,
+            "time": f"{hh:02d}:{mm:02d}:{ss:02d}",
+            "date": f"{year:04d}-{month:02d}-{day:02d}",
+        }
 
+    except (ValueError, IndexError):
+        return None
 
-def _gate_dsp(window: np.ndarray) -> bool:
-    """Run the gate .dlc on the DSP. INT8 only — v66 cannot run FP32."""
-    with tempfile.TemporaryDirectory() as td:
-        raw = os.path.join(td, "input.raw")
-        window.astype(np.float32).tofile(raw)
-        lst = os.path.join(td, "inputs.txt")
-        with open(lst, "w") as f:
-            f.write(raw + "\n")
-        subprocess.run(
-            ["snpe-net-run", "--container", GATE_DLC, "--input_list", lst,
-             "--use_dsp", "--output_dir", td],
-            check=True, capture_output=True, timeout=5,
-        )
-        out = np.fromfile(os.path.join(td, "Result_0", "output.raw"), dtype=np.float32)
-        return bool(out[0] > 0.5)
-
-
-def submit_window(payload: str) -> None:
-    """Bridge RPC target — MCU calls this with a JSON window message."""
-    global _seq
-    msg = json.loads(payload)
-    window = np.asarray(msg["window"], dtype=np.float32)
-    if not gate(window):
-        log.info("gated out: seq=%d", _seq)
-        return
-    _seq += 1
-    event = {
-        "device_id": DEVICE_ID, "user_id": USER_ID, "seq": _seq,
-        "ts": msg.get("ts", time.time()),
-        "lat": msg.get("lat", 0.0), "lng": msg.get("lng", 0.0),
-        "speed_kmh": msg.get("speed_kmh", 30.0),
-        "vehicle_type": "hatchback",
-        "window": window.tolist(),
+def convert_imu(imu: dict):
+    return {
+        "ax": counts_to_g(imu["ax"]),
+        "ay": counts_to_g(imu["ay"]),
+        "az": counts_to_g(imu["az"]),
+        "gx": counts_to_dps(imu["gx"]),
+        "gy": counts_to_dps(imu["gy"]),
+        "gz": counts_to_dps(imu["gz"]),
     }
+
+def format_line(g: dict, gps: dict):
+    if gps["fix_valid"]:
+        gps_str = (
+            f"lat={gps['lat']:.6f} "
+            f"lon={gps['lon']:.6f} "
+            f"spd={gps['speed_kmph']:.1f}km/h "
+            f"sats={gps['satellites']}"
+        )
+    else:
+        gps_str = "NO FIX"
+
+    return (
+        f"ax={g['ax']:+6.3f}g "
+        f"ay={g['ay']:+6.3f}g "
+        f"az={g['az']:+6.3f}g | "
+        f"gx={g['gx']:+8.2f} "
+        f"gy={g['gy']:+8.2f} "
+        f"gz={g['gz']:+8.2f} dps | "
+        f"GPS: {gps_str}"
+    )
+
+class StreamServer:
+    def __init__(self, port):
+        self.port = port
+        self.clients = []
+        self.lock = threading.Lock()
+        self.sock = None
+
+    def start(self):
+        self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self.sock.bind(("0.0.0.0", self.port))
+        self.sock.listen(5)
+        threading.Thread(target=self._accept_loop, daemon=True).start()
+
+    def _accept_loop(self):
+        while True:
+            try:
+                conn, addr = self.sock.accept()
+            except OSError:
+                break
+
+            conn.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+            conn.settimeout(2.0)
+
+            with self.lock:
+                self.clients.append(conn)
+
+            try:
+                conn.sendall(b"--- UNO Q telemetry stream connected ---\n")
+            except OSError:
+                pass
+
+    def broadcast(self, line):
+        data = (line + "\n").encode("utf-8", "replace")
+
+        with self.lock:
+            dead = []
+
+            for client in self.clients:
+                try:
+                    client.sendall(data)
+                except OSError:
+                    dead.append(client)
+
+            for client in dead:
+                try:
+                    client.close()
+                except OSError:
+                    pass
+                self.clients.remove(client)
+
+_server = None
+_inited = False
+
+def _init():
+    global _server, _inited
+
+    if _inited:
+        return
+
+    _inited = True
+    _server = StreamServer(STREAM_PORT)
+
     try:
-        _outbox.put_nowait(event)
-    except queue.Full:
-        log.warning("outbox full; dropping oldest")
-        _outbox.get_nowait()
-        _outbox.put_nowait(event)
+        _server.start()
+        print(
+            f"[NET] Wireless serial live on TCP {STREAM_PORT}. "
+            f"Connect using: nc <uno-ip> {STREAM_PORT}"
+        )
+    except OSError as e:
+        print(f"[NET] Could not start stream server: {e}")
+        _server = None
 
+def loop():
+    _init()
 
-def _sender() -> None:
-    """Background thread: drain the outbox to the X Elite, reconnect forever."""
-    import websockets.sync.client as wsc
+    imu_raw = Bridge.call("get_imu", "")
+    gps_raw = Bridge.call("get_gps", "")
 
-    while True:
-        try:
-            with wsc.connect(PC_WS_URL) as ws:
-                log.info("connected to PC at %s", PC_WS_URL)
-                while True:
-                    ws.send(json.dumps(_outbox.get()))
-        except Exception as exc:
-            log.warning("PC link down (%s); retrying in 2s", exc)
-            time.sleep(2)
+    imu = parse_imu(imu_raw)
+    gps = parse_gps(gps_raw)
 
+    if imu is None or gps is None:
+        print("Warning: malformed data from MCU, skipping this tick.")
+        time.sleep(SAMPLE_PERIOD)
+        return
 
-def main() -> None:
-    threading.Thread(target=_sender, daemon=True).start()
-    try:
-        # App Lab Bridge: verify exact import/API against the Blink example.
-        from arduino.app_utils import App, Bridge  # type: ignore
+    converted = convert_imu(imu)
+    line = format_line(converted, gps)
 
-        Bridge.provide("submit_window", submit_window)
-        log.info("bridge ready; waiting for MCU windows")
-        App.run()
-    except ImportError:
-        log.warning("Bridge unavailable (dev machine?) — reading stdin instead")
-        import sys
-        for line in sys.stdin:
-            submit_window(line)
+    print(line)
 
+    if _server is not None:
+        _server.broadcast(line)
 
-if __name__ == "__main__":
-    main()
+    time.sleep(SAMPLE_PERIOD)
+
+App.run(user_loop=loop)
