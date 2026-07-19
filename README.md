@@ -180,7 +180,7 @@ Selecting a hexagon reveals a detailed popup with:
 | **Priority Score** | `mean_severity × log(1 + reports) × age_factor` |
 
 <p align="center">
-  <img src="assets/images/h3_popup.png" alt="Hexagon detail popup showing severity and confidence" width="70%">
+  <img src="assets/images/WhatsApp Image 2026-07-19 at 12.52.35.jpeg" alt="Hexagon detail popup showing severity and confidence" width="70%">
 </p>
 
 ### Telemetry Dashboard
